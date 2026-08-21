@@ -13,7 +13,8 @@ except ImportError:
 
 DEFAULT_SOURCE_URL = "https://www.scamwatcher.com/scam/view/724988"
 DEFAULT_RECIPIENT = "dmuftic@ziraatbank.ba"
-DEFAULT_TOP_N = 10
+DEFAULT_TOP_N = 100
+DEFAULT_OTX_QUERY = "scam"
 
 
 @dataclass(frozen=True)
@@ -47,3 +48,11 @@ def get_recipient() -> str:
 
 def get_top_n() -> int:
     return int(os.environ.get("SCAM_TOP_N", str(DEFAULT_TOP_N)))
+
+
+def get_otx_api_key() -> str:
+    return os.environ.get("OTX_API_KEY", "")
+
+
+def get_otx_query() -> str:
+    return os.environ.get("OTX_SEARCH_QUERY", DEFAULT_OTX_QUERY)

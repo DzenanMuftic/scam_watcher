@@ -8,7 +8,7 @@ blocked here). Adjust SELECTOR candidates below if the live site differs.
 """
 
 import re
-from urllib.parse import urljoin
+from urllib.parse import unquote, urljoin, urlparse
 
 import requests
 from bs4 import BeautifulSoup
@@ -19,12 +19,20 @@ USER_AGENT = "ScamWatcherAgent/1.0 (+https://github.com/DzenanMuftic/scam_watche
 REQUEST_TIMEOUT = 15
 
 SCAM_LINK_RE = re.compile(r"/scam/view/(\d+)")
+LOCAL_FIXTURE_ID_RE = re.compile(r"scam_(\d+)\.html$")
 
 
-def _get(url: str) -> BeautifulSoup:
+def _fetch_text(url: str) -> str:
+    """Fetches page text over HTTP(S), or reads it from disk when url is a
+    file:// URI. The file:// mode lets the pipeline be exercised end-to-end
+    against local HTML fixtures when the live site is unreachable."""
+    if urlparse(url).scheme == "file":
+        path = unquote(urlparse(url).path)
+        with open(path, encoding="utf-8") as f:
+            return f.read()
     resp = requests.get(url, headers={"User-Agent": USER_AGENT}, timeout=REQUEST_TIMEOUT)
     resp.raise_for_status()
-    return BeautifulSoup(resp.text, "html.parser")
+    return resp.text
 
 
 def _first_text(soup: BeautifulSoup, selectors) -> str:
@@ -81,7 +89,14 @@ def find_related_scam_urls(html: str, base_url: str, exclude_id: str, limit: int
         if found_id == exclude_id or found_id in seen:
             continue
         seen.add(found_id)
-        ordered.append((found_id, urljoin(base_url, a["href"])))
+        if urlparse(base_url).scheme == "file":
+            # Local fixtures use flat filenames (scam_<id>.html) rather than
+            # the site's /scam/view/<id> path structure, so resolve siblings
+            # by id instead of literally joining the href.
+            related_url = urljoin(base_url, f"scam_{found_id}.html")
+        else:
+            related_url = urljoin(base_url, a["href"])
+        ordered.append((found_id, related_url))
         if len(ordered) >= limit:
             break
     return ordered
@@ -91,22 +106,19 @@ def fetch_top_scams(source_url: str, top_n: int):
     """Fetches the seed scam report at source_url, then follows related-scam
     links found on that page (in page order) until top_n entries total are
     collected. Returns a list of ScamEntry."""
-    match = SCAM_LINK_RE.search(source_url)
+    match = SCAM_LINK_RE.search(source_url) or LOCAL_FIXTURE_ID_RE.search(source_url)
     seed_id = match.group(1) if match else source_url
 
-    resp = requests.get(source_url, headers={"User-Agent": USER_AGENT}, timeout=REQUEST_TIMEOUT)
-    resp.raise_for_status()
-    seed_html = resp.text
+    seed_html = _fetch_text(source_url)
 
     entries = [parse_scam_page(seed_html, source_url, seed_id)]
 
     related = find_related_scam_urls(seed_html, source_url, seed_id, limit=top_n - 1)
     for related_id, related_url in related:
         try:
-            related_resp = requests.get(related_url, headers={"User-Agent": USER_AGENT}, timeout=REQUEST_TIMEOUT)
-            related_resp.raise_for_status()
-            entries.append(parse_scam_page(related_resp.text, related_url, related_id))
-        except requests.RequestException:
+            related_html = _fetch_text(related_url)
+            entries.append(parse_scam_page(related_html, related_url, related_id))
+        except (requests.RequestException, OSError):
             continue
         if len(entries) >= top_n:
             break
